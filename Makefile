@@ -9,7 +9,7 @@ blink.json: mkBlink.v
 ulx3s_out.config: blink.json
 	nextpnr-ecp5 --85k --json blink.json \
 		--lpf ulx3s_v20.lpf \
-		--textcfg ulx3s_out.config 
+		--textcfg ulx3s_out.config
 
 ulx3s.bit: ulx3s_out.config
 	ecppack ulx3s_out.config ulx3s.bit

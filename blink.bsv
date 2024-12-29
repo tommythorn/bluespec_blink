@@ -1,7 +1,7 @@
 // Copyright © 2024 Tommy Thorn <tommy-github2@thorn.ws>
 //
-// Near-simplest possible example for blinking LED with Bluespec
-// This example is assuming the ULX3S FPGA dev board.
+// Near-simplest possible example to show ULX3S blinking and writing
+// to the serial port
 
 // For the toplevel module, the interface defines the Verilog ports.
 // Inputs are read with Action methods and output are written with
@@ -10,8 +10,9 @@
 interface Blink;
   (* prefix="" *)           method Action  readButtons((* port="btn" *) Bit#(7) buttons);
   (* result="led" *)        method Bit#(8) led();
-  // Tie GPIO0 high, keeping board from rebooting
-  (* result="wifi_gpio0" *) method Bool    dont_reboot();
+  (* result="ftdi_rxd" *)   method Bit#(1) uart_tx(); // Yes, serial tx/rx naming is bad
+  // Tie GPIO0, keep board from rebooting
+  (* result="wifi_gpio0" *) method Bool dont_reboot();
 endinterface
 
 (*
@@ -24,26 +25,21 @@ endinterface
    clock_prefix = "clk_25mhz"
 *)
 module mkBlink(Blink);
-  Reg#(Bit#(7))  buttons <- mkReg(0);
-  Reg#(Bit#(8))  leds    <- mkReg(0);
-  Reg#(Bit#(20)) counter <- mkReg(0);
+  SerialTx tx <- mkSimpleSerialTx();
 
-  // In the current Bluespec implementation, this is basically equivalent to
-  //
-  //   always @(posedge clk_25mhz) if (!user_programn) ... else if (count(buttons[0] == 1) begin
-  //     counter <= counter + 1;
-  //     if (counter == 0) leds <= leds + 1;
-  //   end
-  //
-  // In a more more complicated Bluescript design, there will be additional
-  // conditions inferred by the compiler.
-  rule count(buttons[0] == 1);
-    counter <= counter + 1;
-    if (counter == 0) leds <= leds + 1;
+  Reg#(Bit#(7))  buttons <- mkRegU;
+  Reg#(Bit#(8))  leds    <- mkRegU;
+
+  rule generate_new(buttons[0] == 0);
+    tx.send(8'd64 | zeroExtend(leds[5:0]));
+    leds <= leds + 1;
   endrule
 
-  // As mentioned, for the top-level module, this is just exporting
-  // the register to the outputs
+  // This is just exporting mkSimpleSerialTx.tx to top-level
+  method Bit#(1) uart_tx();
+    return tx.uart_tx();
+  endmethod
+
   method Bit#(8) led();
     return leds;
   endmethod
@@ -56,9 +52,47 @@ module mkBlink(Blink);
   // The compiler turns this into
   //
   //   always @(posedge clk_25mhz) buttons <= btn;
-  //  
+  //
   // (we ignore the user_programn side)
   method Action readButtons(Bit#(7) buttons_in);
     buttons <= buttons_in;
+  endmethod
+endmodule
+
+interface SerialTx;
+  method Action send(Bit#(8) ch);
+  method Bit#(1) uart_tx();
+endinterface
+
+// Serial 8N1 TX
+// Max macOS: 230400 @ 25 MHz => divide by 109, 0.5% error, OK
+//     Linux:  2Mbps @ 25 MHz => divide by  13, 3.8% error, OK
+// Max Linux:  3Mbps @ 25 MHz => divide by   8, 4.2% error, fails
+module mkSimpleSerialTx(SerialTx);
+  Reg#(Bit#(8))  txBit   <- mkRegU;
+  Reg#(Bit#(1))  tx      <- mkReg(1);
+  Reg#(UInt#(8))  cyclec <- mkReg(0);
+  Reg#(UInt#(4))  bitc    <- mkReg(0);
+
+  rule pass_time(cyclec != 0);
+    cyclec <= cyclec - 1;
+  endrule
+
+  rule shift_bits(cyclec == 0 && bitc != 0);
+    tx <= txBit[0];
+    txBit <= {1'd1, txBit[7:1]};
+    bitc <= bitc - 1;
+    cyclec <= 109 - 1;
+  endrule
+
+  method Action send(Bit#(8) ch) if (cyclec == 0 && bitc == 0);
+    tx <= 0;
+    txBit <= ch;
+    bitc <= 9;
+    cyclec <= 109 - 1;
+  endmethod
+
+  method Bit#(1) uart_tx();
+    return tx;
   endmethod
 endmodule
