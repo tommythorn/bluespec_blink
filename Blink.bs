@@ -1,0 +1,87 @@
+package Blink where
+
+import Vector
+
+interface ULX3SMinimalTop =
+  led         :: Bit 8
+  uartTx      :: Bit 1                    {-# result = ftdi_rxd #-}
+  dontReboot  :: Bool                     {-# result = wifi_gpio0 #-}
+  readButtons :: Vector 7 Bool -> Action  {-# prefix = "", arg_names = [btn] #-}
+
+{-# properties mkBlink = {
+      alwaysReady,
+      alwaysEnabled,
+      CLK = clk_25mhz,
+      RSTN = user_program
+    } #-}
+mkBlink :: (IsModule m c) => m ULX3SMinimalTop
+mkBlink = module
+  serialTx  :: SerialTx <- mkSimpleSerialTx (109 - 1)
+  buttons   :: Reg (Vector 7 Bool) <- mkRegU
+  leds      :: Reg (Bit 8) <- mkRegU
+
+  alwaysIf_Implicit "generate new" (select buttons 0) do
+    -- _Implicit because of guard on send function.
+    serialTx.send (8'd64 | (zeroExtend leds[5:0]))
+    leds := leds + 1
+
+  interface ULX3SMinimalTop
+    uartTx = serialTx.tx
+    led = leds
+    dontReboot = True
+    readButtons buttons_ = buttons := buttons_
+
+interface SerialTx =
+  send  :: Bit 8 -> Action
+  tx    :: Bit 1
+
+mkSimpleSerialTx :: (IsModule m c) => UInt 8 -> m SerialTx
+mkSimpleSerialTx cycleCountInit = module
+  bitsIn        :: Reg (Vector 8 (Bit 1)) <- mkRegU
+  bitOut        :: Reg (Bit 1) <- mkReg 1
+  cycleCount    :: Reg (UInt 8) <- mkReg 0
+  bitsRemaining :: Reg (UInt 4) <- mkReg 0
+
+  alwaysIf "pass time" (cycleCount /= 0) do
+    cycleCount := cycleCount - 1
+
+  alwaysIf "shift bits" (cycleCount == 0 && bitsRemaining /= 0) do
+    cycleCount := cycleCountInit
+    bitsRemaining := bitsRemaining - 1
+    bitsIn := shiftInAtN bitsIn 1'b1
+    bitOut := select bitsIn 0
+
+  interface SerialTx
+    send bitsIn_ = do
+        cycleCount := cycleCountInit;
+        bitsRemaining := 9;
+        bitsIn := unpack bitsIn_;
+        bitOut := 0; -- Start bit
+      when (cycleCount == 0 && bitsRemaining == 0)
+    tx = bitOut
+
+--
+-- Some syntactic sugar over rules, making them easier to read.
+--
+
+ruleIf :: String -> Bool -> Action -> Rules
+ruleIf s pred a =
+  rules
+    {-# ASSERT no implicit conditions #-}
+    {-# ASSERT fire when enabled #-}
+    s: when pred ==> a
+
+alwaysIf :: (IsModule m c) => String -> Bool -> Action -> m Empty
+alwaysIf s pred a = addRules $ ruleIf s pred a
+
+-- ruleIf and alwaysIf which can be used with implicit conditions (guards on
+-- interface methods.)
+
+ruleIf_Implicit :: String -> Bool -> Action -> Rules
+ruleIf_Implicit s pred a =
+  rules
+    {-# ASSERT fire when enabled #-}
+    s: when pred ==> a
+
+alwaysIf_Implicit :: (IsModule m c) => String -> Bool -> Action -> m Empty
+alwaysIf_Implicit s pred a = addRules $ ruleIf_Implicit s pred a

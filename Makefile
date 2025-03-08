@@ -1,7 +1,7 @@
 all: prog
 
-mkBlink.v: blink.bsv
-	bsc -verilog blink.bsv
+mkBlink.v: Blink.bs
+	bsc -verilog Blink.bs
 
 blink.json: mkBlink.v
 	yosys -p "synth_ecp5 -json blink.json" mkBlink.v
